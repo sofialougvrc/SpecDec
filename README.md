@@ -164,6 +164,25 @@ The benchmark output reports:
 - proposed, accepted, rejected, and emitted token counts;
 - depth and accepted-per-step distributions.
 
+### T4 Acceptance-Rejection Kernel Result
+
+The Colab T4 CUDA microbenchmark result is stored in
+[`results/acceptance_kernel_t4.json`](results/acceptance_kernel_t4.json).
+
+| GPU | Depth | Kernel latency | PyTorch loop latency | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Tesla T4 | 1 | 12.41 us | 230.64 us | 18.58x |
+| Tesla T4 | 2 | 7629.21 us | 253.15 us | 0.03x |
+
+The depth-1 result is strong and CV-worthy as a targeted CUDA microkernel
+optimization: the custom launcher beats the pure PyTorch acceptance-rejection
+loop by about 18.6x for GPT-2 vocabulary size. The depth-2 result exposes the
+next optimization target. When a rejection occurs, the current kernel computes
+the full corrected distribution in a serial per-position loop, so one CUDA
+thread can end up scanning the entire 50,257-token vocabulary. A production
+version should parallelize the residual `max(p - q, 0)` computation and
+normalization across vocabulary lanes.
+
 The dependency-free toy benchmark validates the harness but should not be read
 as a real speed result. Python toy models have no transformer parallelism, so
 speculation is often slower. The real speed experiment is the Hugging

@@ -1,0 +1,22 @@
+[
+  {
+    "depth": 1,
+    "force_reject": false,
+    "gpu": "Tesla T4",
+    "kernel_latency_us": 12.411775588989258,
+    "pytorch_latency_us": 230.64285278320312,
+    "speedup_vs_pytorch": 18.58258321942359,
+    "threads_per_block": 128,
+    "vocab_size": 50257
+  },
+  {
+    "depth": 2,
+    "force_reject": false,
+    "gpu": "Tesla T4",
+    "kernel_latency_us": 7629.21484375,
+    "pytorch_latency_us": 253.1456756591797,
+    "speedup_vs_pytorch": 0.033181091481066564,
+    "threads_per_block": 128,
+    "vocab_size": 50257
+  }
+]
