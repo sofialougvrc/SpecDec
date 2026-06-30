@@ -1,26 +1,109 @@
-# Speculative Decoding Engine
+# SpecDec
 
-From-scratch implementation of exact speculative decoding after Yaniv Leviathan,
-Matan Kalman, and Yossi Matias, ["Fast Inference from Transformers via
-Speculative Decoding"](https://arxiv.org/abs/2211.17192), ICML 2023.
+SpecDec is an ML systems project implementing **exact speculative decoding** for
+transformer inference, with a CUDA microkernel for the acceptance-rejection
+verification step.
 
-The implementation includes:
+The project is based on Leviathan, Kalman, and Matias,
+["Fast Inference from Transformers via Speculative Decoding"](https://arxiv.org/abs/2211.17192),
+ICML 2023. The goal is to reduce autoregressive decoding latency while
+preserving the target model's output distribution exactly.
 
-- Draft-model speculation for `n` future tokens.
-- One parallel target-model verification pass over the speculated continuation.
-- The exact acceptance-rejection correction:
-  - accept proposed token `x` with probability `min(1, p(x) / q(x))`;
-  - on rejection, sample from `normalize(max(p - q, 0))`;
-  - if all draft tokens are accepted, sample one bonus token from the target model.
-- Adaptive speculation depth based on observed acceptance rate.
-- Benchmark harness for autoregressive baseline vs. fixed-depth and adaptive
-  speculative decoding.
-- Dependency-free toy models and tests for the statistical core.
-- Optional Hugging Face/PyTorch adapter for real causal LMs such as GPT-2.
+## Highlights
+
+- Implemented speculative decoding from scratch, including draft generation,
+  target verification, token-level acceptance sampling, rejection correction,
+  and adaptive speculation depth.
+- Built a Hugging Face/PyTorch benchmark path for GPT-2 draft/target model
+  experiments.
+- Added a standalone CUDA C++ acceptance-rejection kernel compiled with NVCC
+  and called from Python through `ctypes`, avoiding Colab `load_inline` import
+  issues.
+- Benchmarked the CUDA kernel on a Google Colab Tesla T4 against a pure PyTorch
+  acceptance-rejection loop.
+- Added dependency-free correctness tests using deterministic toy language
+  models, so the core algorithm can be validated without downloading LLM
+  weights.
+
+## Measured Result
+
+Acceptance-rejection microbenchmark on **Google Colab Tesla T4**, GPT-2
+vocabulary size `50,257`, `128` CUDA threads per block:
+
+| Depth | CUDA kernel latency | PyTorch loop latency | Speedup |
+| ---: | ---: | ---: | ---: |
+| 1 | 12.41 us | 230.64 us | 18.58x |
+| 2 | 7629.21 us | 253.15 us | 0.03x |
+
+The depth-1 result demonstrates a strong targeted kernel win: the custom CUDA
+launcher is **18.6x faster** than the equivalent PyTorch loop for the
+acceptance-rejection correction. The depth-2 result is intentionally reported
+instead of hidden: it exposes the next systems bottleneck. When rejection occurs,
+the current kernel computes the corrected distribution with a serial
+full-vocabulary scan inside one CUDA thread. A production version should
+parallelize residual computation and normalization across vocabulary lanes.
+
+Raw result: [`results/acceptance_kernel_t4.json`](results/acceptance_kernel_t4.json)
+
+## Why This Matters
+
+Autoregressive transformer inference is latency-bound because each generated
+token usually requires a target-model forward pass. Speculative decoding uses a
+smaller draft model to propose multiple tokens, then verifies them with the
+target model in parallel. Correct implementations can reduce target-model calls
+without changing the sampled distribution.
+
+This project demonstrates the core inference algorithm and a CUDA optimization
+path for the sampling correction layer.
+
+## System Design
+
+```text
+Prompt tokens
+    |
+    v
+Draft model proposes n tokens
+    |
+    v
+Target model verifies all proposed positions in one parallel pass
+    |
+    v
+Acceptance-rejection correction
+    |
+    +-- accept token with min(1, p(x) / q(x))
+    |
+    +-- on rejection, resample from normalize(max(p - q, 0))
+    |
+    v
+Emit accepted tokens or corrected replacement
+```
+
+Main components:
+
+- `specdec/core.py`: exact speculative decoding loop.
+- `specdec/distributions.py`: categorical sampling and rejection correction.
+- `specdec/adaptive.py`: adaptive speculation-depth controller.
+- `specdec/hf.py`: Hugging Face causal-LM adapter.
+- `specdec/cuda/acceptance_rejection_kernel.cu`: CUDA kernel and C launcher.
+- `specdec/cuda_extension.py`: NVCC build helper and `ctypes` Python binding.
+- `scripts/benchmark_acceptance_kernel.py`: CUDA kernel vs PyTorch benchmark.
+
+## Tech Stack
+
+- Python 3.10+
+- PyTorch
+- Hugging Face Transformers
+- CUDA C++
+- NVCC
+- cuRAND
+- `ctypes`
+- CUDA events
+- Python `unittest`
+- Git/GitHub
 
 ## Quick Start
 
-The exact algorithm and tests run without third-party packages:
+The core algorithm and tests do not require PyTorch:
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -28,13 +111,17 @@ python3 -m specdec toy --max-new-tokens 32 --depth 4 --seed 7
 python3 -m specdec toy-benchmark --max-new-tokens 5000 --depths 1 2 4 8 --repeats 2
 ```
 
-For real GPT-2 experiments:
+For Hugging Face model experiments:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[hf,dev]'
+```
 
+CPU benchmark:
+
+```bash
 python3 -m specdec hf-benchmark \
   --draft-model gpt2 \
   --target-model gpt2-medium \
@@ -44,7 +131,7 @@ python3 -m specdec hf-benchmark \
   --device cpu
 ```
 
-On a CUDA machine:
+CUDA benchmark:
 
 ```bash
 python3 -m specdec hf-benchmark \
@@ -57,24 +144,24 @@ python3 -m specdec hf-benchmark \
   --dtype float16
 ```
 
-## Colab T4 CUDA Kernel Benchmark
+## CUDA Kernel Benchmark
 
-For the acceptance-rejection CUDA microbenchmark, use the standalone NVCC plus
-ctypes path instead of `torch.utils.cpp_extension.load_inline`. This avoids the
-Colab failure mode where compilation succeeds but the inline extension import
-fails at the generated `.so` step.
+The CUDA microbenchmark uses a standalone `.cu` file compiled with NVCC and
+loaded with `ctypes`. This avoids the Colab failure mode where
+`torch.utils.cpp_extension.load_inline` compiles successfully but fails during
+the generated `.so` import step.
 
 On Google Colab with a T4 runtime:
 
 ```bash
 !nvidia-smi
-!git clone <your-repo-url> SpecDec
+!git clone https://github.com/sofialougvrc/SpecDec.git
 %cd SpecDec
 !pip install -e '.[hf,dev]'
 !bash scripts/colab_cuda_kernel_setup.sh
 ```
 
-Or run the benchmark directly:
+Direct benchmark command:
 
 ```bash
 !python scripts/benchmark_acceptance_kernel.py \
@@ -85,7 +172,7 @@ Or run the benchmark directly:
   > outputs/acceptance_kernel_t4.json
 ```
 
-The Python callable is:
+Python callable:
 
 ```python
 from specdec.cuda_extension import AcceptanceRejectionCuda
@@ -110,99 +197,58 @@ blocks = ceil(speculation_depth / threads_per_block)
 threads = threads_per_block
 ```
 
-For a T4, `--arch sm_75` is the right target.
+For Colab T4, use `--arch sm_75`.
 
-## Repository Layout
-
-```text
-specdec/
-  core.py           exact speculative decoding loop
-  distributions.py  categorical sampling and residual distribution math
-  adaptive.py       speculation-depth controller
-  models.py         language-model protocol and toy bigram model
-  hf.py             optional Hugging Face causal-LM adapter
-  benchmark.py      autoregressive vs speculative benchmark harness
-  cli.py            command-line entrypoint
-tests/
-  test_*            dependency-free correctness tests
-scripts/
-  *.sh              repeatable benchmark/test helpers
-```
-
-## Algorithm Notes
+## Algorithm Correctness
 
 Let `q_i` be the draft distribution and `p_i` the target distribution at
-position `i`, conditioned on the prompt plus previously accepted draft tokens.
-The draft samples candidates `x_1 ... x_gamma`. The target then scores every
-candidate position plus the final bonus position in one forward pass.
+position `i`. The draft model samples proposed tokens `x_1 ... x_n`. The target
+model scores all proposed positions in one verification pass.
 
-For each candidate `x_i`, the sampler accepts it with probability:
+For each proposed token:
 
 ```text
-alpha_i = min(1, p_i(x_i) / q_i(x_i))
+accept with probability min(1, p_i(x_i) / q_i(x_i))
 ```
 
-If the candidate is rejected, the sampler emits one replacement token from:
+If the token is rejected, the sampler emits a replacement token from:
 
 ```text
 normalize(max(p_i - q_i, 0))
 ```
 
-and discards the rest of the draft. If all candidates are accepted, the sampler
-emits one additional token from the final target distribution `p_{gamma+1}`.
-This is the nontrivial part that preserves the target model's distribution.
+If all proposed tokens are accepted, the sampler emits one additional token from
+the final target distribution. This correction is the key step that preserves
+the target model's distribution exactly.
 
-## Measurement
+## Repository Layout
 
-The benchmark output reports:
+```text
+specdec/
+  core.py                         speculative decoding loop
+  distributions.py                probability utilities
+  adaptive.py                     speculation-depth controller
+  models.py                       model protocol and toy models
+  hf.py                           Hugging Face causal-LM adapter
+  cuda_extension.py               ctypes CUDA loader
+  cuda/acceptance_rejection_kernel.cu
+scripts/
+  benchmark_acceptance_kernel.py  CUDA vs PyTorch microbenchmark
+  colab_cuda_kernel_setup.sh      Colab T4 helper
+  benchmark_gpt2_cuda.sh          GPT-2 CUDA benchmark helper
+tests/
+  test_*                          correctness tests
+results/
+  acceptance_kernel_t4.json       measured Colab T4 result
+```
 
-- wall-clock elapsed seconds;
-- tokens per second;
-- speedup vs. autoregressive decoding;
-- mean acceptance rate;
-- target and draft call counts;
-- proposed, accepted, rejected, and emitted token counts;
-- depth and accepted-per-step distributions.
+## Current Limitations
 
-### T4 Acceptance-Rejection Kernel Result
-
-The Colab T4 CUDA microbenchmark result is stored in
-[`results/acceptance_kernel_t4.json`](results/acceptance_kernel_t4.json).
-
-| GPU | Depth | Kernel latency | PyTorch loop latency | Speedup |
-| --- | ---: | ---: | ---: | ---: |
-| Tesla T4 | 1 | 12.41 us | 230.64 us | 18.58x |
-| Tesla T4 | 2 | 7629.21 us | 253.15 us | 0.03x |
-
-The depth-1 result is strong and CV-worthy as a targeted CUDA microkernel
-optimization: the custom launcher beats the pure PyTorch acceptance-rejection
-loop by about 18.6x for GPT-2 vocabulary size. The depth-2 result exposes the
-next optimization target. When a rejection occurs, the current kernel computes
-the full corrected distribution in a serial per-position loop, so one CUDA
-thread can end up scanning the entire 50,257-token vocabulary. A production
-version should parallelize the residual `max(p - q, 0)` computation and
-normalization across vocabulary lanes.
-
-The dependency-free toy benchmark validates the harness but should not be read
-as a real speed result. Python toy models have no transformer parallelism, so
-speculation is often slower. The real speed experiment is the Hugging
-Face/PyTorch path where the target model verifies `n + 1` positions in one model
-call.
-
-## Production Caveats
-
-This project is a production-quality algorithmic prototype, not a model server.
-It does not implement paged KV-cache management, batching across users, custom
-CUDA kernels, or distributed serving. Those are the right next layers if this is
-turned into an inference system. The current adapter already supports `--device
-cuda` through PyTorch, so CUDA benchmarking is available when torch and model
-weights are installed on a GPU machine.
-
-For CPU-only M-series runs with GPT-2 small as draft and GPT-2 medium as target,
-expect modest speedups at high acceptance rates and possible slowdowns at low
-depths or low acceptance. That is consistent with the paper's hardware argument:
-the algorithm benefits most when verifying several positions costs close to one
-target-model step.
+SpecDec is an ML systems prototype, not a full inference server. It does not yet
+include paged KV-cache management, multi-user batching, distributed serving, or
+parallelized residual normalization for depth greater than 1. The most important
+next optimization is rewriting the rejection branch so the full-vocabulary
+`max(p - q, 0)` correction is parallelized across CUDA threads.
 
 ## References
 
