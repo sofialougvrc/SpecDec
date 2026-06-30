@@ -1,6 +1,6 @@
 # SpecDec
 
-SpecDec is an ML systems project implementing **exact speculative decoding** for
+ML systems implementing **exact speculative decoding** for
 transformer inference, with a CUDA microkernel for the acceptance-rejection
 verification step.
 
