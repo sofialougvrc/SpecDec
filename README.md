@@ -4,7 +4,7 @@ ML systems implementing **exact speculative decoding** for
 transformer inference, with a CUDA microkernel for the acceptance-rejection
 verification step.
 
-The project is based on Leviathan, Kalman, and Matias,
+Based on Leviathan, Kalman, and Matias,
 ["Fast Inference from Transformers via Speculative Decoding"](https://arxiv.org/abs/2211.17192),
 ICML 2023. The goal is to reduce autoregressive decoding latency while
 preserving the target model's output distribution exactly.
