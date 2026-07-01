@@ -1,29 +1,63 @@
 # SpecDec
 
-ML systems implementing **exact speculative decoding** for
-transformer inference, with a CUDA microkernel for the acceptance-rejection
-verification step.
+SpecDec is an ML systems project implementing **exact speculative decoding** for
+transformer inference, with a custom CUDA microkernel for one of the algorithm's
+hot paths: the acceptance-rejection verification step.
 
 Based on Leviathan, Kalman, and Matias,
 ["Fast Inference from Transformers via Speculative Decoding"](https://arxiv.org/abs/2211.17192),
-ICML 2023. The goal is to reduce autoregressive decoding latency while
-preserving the target model's output distribution exactly.
+ICML 2023. Speculative decoding accelerates autoregressive generation by using
+a smaller draft model to propose multiple future tokens, then verifying those
+tokens with the target model in parallel. The difficult part is not simply
+generating draft tokens; it is applying the acceptance-rejection correction that
+keeps the output distribution exactly equal to the target model's distribution.
+
+SpecDec implements that full correction path, exposes it through a benchmarkable
+Python package, and includes a standalone CUDA C++ kernel for the
+acceptance-rejection verification step.
+
+## Recruiter Summary
+
+| Area | What this project demonstrates |
+| --- | --- |
+| ML systems | Implemented a real transformer inference algorithm from a published ICML paper. |
+| Probabilistic correctness | Preserved exact target-model sampling with acceptance-rejection correction. |
+| GPU programming | Wrote and launched a CUDA C++ microkernel with NVCC, cuRAND, and `ctypes`. |
+| Benchmarking | Measured latency against a PyTorch baseline on Google Colab Tesla T4. |
+| Engineering quality | Packaged the project with tests, CLI entrypoints, reproducible scripts, and documented limitations. |
 
 ## Highlights
 
-- Implemented speculative decoding from scratch, including draft generation,
-  target verification, token-level acceptance sampling, rejection correction,
-  and adaptive speculation depth.
-- Built a Hugging Face/PyTorch benchmark path for GPT-2 draft/target model
-  experiments.
-- Added a standalone CUDA C++ acceptance-rejection kernel compiled with NVCC
-  and called from Python through `ctypes`, avoiding Colab `load_inline` import
-  issues.
-- Benchmarked the CUDA kernel on a Google Colab Tesla T4 against a pure PyTorch
-  acceptance-rejection loop.
-- Added dependency-free correctness tests using deterministic toy language
-  models, so the core algorithm can be validated without downloading LLM
+- **From-scratch speculative decoding engine.** Implements draft-token
+  generation, target-model verification, token-level acceptance sampling,
+  rejection correction, bonus-token sampling, and adaptive speculation depth.
+- **Exact distribution preservation.** Uses the paper's correction
+  `normalize(max(p - q, 0))` on rejection, rather than approximating with a
+  target-model resample. This is the key statistical detail that prevents bias.
+- **Hugging Face/PyTorch inference path.** Supports GPT-2-style draft/target
+  experiments through a causal language model adapter and CLI benchmark harness.
+- **CUDA microkernel path.** Adds a standalone CUDA C++ acceptance-rejection
+  kernel compiled with NVCC and called from Python through `ctypes`, avoiding
+  Colab `load_inline` shared-library import failures.
+- **Measured GPU result.** Benchmarks the CUDA kernel on a Google Colab Tesla T4
+  against a pure PyTorch acceptance-rejection loop at GPT-2 vocabulary size.
+- **Correctness-first tests.** Includes dependency-free toy language models and
+  unit tests so the sampling logic can be validated without downloading model
   weights.
+- **Honest systems analysis.** Reports both the successful depth-1 kernel result
+  and the depth-2 bottleneck, with the next optimization target clearly
+  identified.
+
+## What I Built
+
+| Component | Purpose |
+| --- | --- |
+| Speculative decoder | Generates draft continuations, verifies them with the target model, and emits exact corrected samples. |
+| Adaptive depth controller | Adjusts speculation depth based on observed acceptance rate. |
+| Benchmark harness | Compares autoregressive decoding, fixed-depth speculation, adaptive speculation, and CUDA microkernel latency. |
+| CUDA launcher | Builds a `.so` with NVCC and launches `<<<blocks, threads>>>` from Python without PyTorch extension import machinery. |
+| Hugging Face adapter | Lets the same algorithm run against causal LMs such as GPT-2 small and GPT-2 medium. |
+| Toy model testbed | Provides deterministic, dependency-free tests for algorithmic correctness. |
 
 ## Measured Result
 
@@ -45,6 +79,16 @@ parallelize residual computation and normalization across vocabulary lanes.
 
 Raw result: [`results/acceptance_kernel_t4.json`](results/acceptance_kernel_t4.json)
 
+Experimental setup:
+
+- GPU: Google Colab Tesla T4
+- Kernel target: `sm_75`
+- Vocabulary size: `50,257`
+- Benchmark iterations: `2,000`
+- Warmup iterations: `200`
+- Timing method: CUDA events
+- Baseline: pure PyTorch acceptance-rejection loop
+
 ## Why This Matters
 
 Autoregressive transformer inference is latency-bound because each generated
@@ -53,8 +97,14 @@ smaller draft model to propose multiple tokens, then verifies them with the
 target model in parallel. Correct implementations can reduce target-model calls
 without changing the sampled distribution.
 
-This project demonstrates the core inference algorithm and a CUDA optimization
-path for the sampling correction layer.
+For inference teams, this project touches the same concerns that show up in
+production LLM serving: target-model latency, draft-model quality, acceptance
+rate, GPU launch overhead, sampling correctness, and the boundary between
+framework-level tensor code and custom kernels.
+
+SpecDec is not a model server. It is a focused implementation of the algorithmic
+and systems pieces needed to understand, measure, and optimize speculative
+decoding.
 
 ## System Design
 
@@ -87,6 +137,24 @@ Main components:
 - `specdec/cuda/acceptance_rejection_kernel.cu`: CUDA kernel and C launcher.
 - `specdec/cuda_extension.py`: NVCC build helper and `ctypes` Python binding.
 - `scripts/benchmark_acceptance_kernel.py`: CUDA kernel vs PyTorch benchmark.
+
+## Engineering Decisions
+
+- **Kept the mathematical core dependency-free.** The exact sampler can be
+  tested with toy models using only the Python standard library. PyTorch and
+  Transformers are optional for real model experiments.
+- **Separated algorithm correctness from GPU optimization.** The speculative
+  decoding loop is implemented in Python first, then the acceptance-rejection
+  path is isolated for CUDA benchmarking.
+- **Used a standalone NVCC build instead of `load_inline`.** Colab can compile
+  inline CUDA extensions and still fail when importing the generated shared
+  object. The project avoids that by compiling a normal `.so` and loading it
+  through `ctypes`.
+- **Reported negative results.** Depth 2 currently exposes a serial
+  full-vocabulary correction bottleneck. That result is included because it
+  points directly to the next CUDA optimization.
+- **Kept benchmarks reproducible.** Scripts include fixed depth settings,
+  warmup iterations, CUDA-event timing, and saved JSON outputs.
 
 ## Tech Stack
 
