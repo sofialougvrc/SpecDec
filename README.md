@@ -16,7 +16,7 @@ SpecDec implements that full correction path, exposes it through a benchmarkable
 Python package, and includes a standalone CUDA C++ kernel for the
 acceptance-rejection verification step.
 
-## Recruiter Summary
+## Summary
 
 | Area | What this project demonstrates |
 | --- | --- |
